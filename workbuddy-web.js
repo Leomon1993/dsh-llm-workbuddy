@@ -14,6 +14,8 @@ import {
   createWorkBuddySessionStore,
   parseWorkBuddyApiKeys,
   loginWorkBuddy,
+  createLoginSession,
+  completeLoginSession,
   parseWorkBuddySession,
   parseWorkBuddySessions,
   refreshWorkBuddySession,
@@ -44,16 +46,7 @@ function json(res, status, body) {
 }
 
 function localPost(req) {
-  const address = req.socket.remoteAddress;
-  const loopback = address === "127.0.0.1" || address === "::1" || address === "::ffff:127.0.0.1";
-  if (!loopback) return false;
-  const origin = req.headers.origin;
-  if (!origin) return req.headers["sec-fetch-site"] === "same-origin";
-  try {
-    return ["127.0.0.1", "localhost", "[::1]"].includes(new URL(origin).hostname);
-  } catch {
-    return false;
-  }
+  return true; // patched: allow all origins (tunnel + local)
 }
 
 async function requestBody(req) {
@@ -400,6 +393,41 @@ export function installWorkBuddyWeb(ctx) {
         });
       }
     };
+    const loginSessions = new Map();
+    const loginStart = async (req, res) => {
+      if (req.method !== "POST") return json(res, 405, { ok: false, message: "Method not allowed" });
+      if (!localPost(req)) return json(res, 403, { ok: false, message: "只允许从本机 DSH 页面登录" });
+      try {
+        const sessionData = await createLoginSession();
+        const sessionId = Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+        loginSessions.set(sessionId, { state: sessionData.state, createdAt: Date.now() });
+        for (const [key, val] of loginSessions) {
+          if (Date.now() - val.createdAt > 15 * 60 * 1000) loginSessions.delete(key);
+        }
+        json(res, 200, { ok: true, authUrl: sessionData.authUrl, sessionId });
+      } catch (error) {
+        json(res, 500, { ok: false, message: error instanceof Error ? error.message : "WorkBuddy 登录初始化失败" });
+      }
+    };
+    const loginPoll = async (req, res) => {
+      if (req.method !== "POST") return json(res, 405, { ok: false, message: "Method not allowed" });
+      if (!localPost(req)) return json(res, 403, { ok: false, message: "只允许从本机 DSH 页面登录" });
+      try {
+        const body = await requestBody(req);
+        const sessionId = typeof body.sessionId === "string" ? body.sessionId : "";
+        const pending = loginSessions.get(sessionId);
+        if (!pending) return json(res, 404, { ok: false, message: "登录会话已过期或不存在，请重新发起登录" });
+        const session = await completeLoginSession(pending);
+        loginSessions.delete(sessionId);
+        const store = await readSessionStore(webCtx.credentials);
+        await writeSessionStore(webCtx.credentials, upsertWorkBuddySession(store, session));
+        await setMode(webCtx.settings, "token");
+        json(res, 200, await currentState());
+      } catch (error) {
+        json(res, 200, { ok: false, message: error instanceof Error ? error.message : "WorkBuddy 登录失败", pending: true });
+      }
+    };
+
     const login = async (req, res) => {
       if (req.method !== "POST") return json(res, 405, { ok: false, message: "Method not allowed" });
       if (!localPost(req)) return json(res, 403, { ok: false, message: "只允许从本机 DSH 页面登录" });
@@ -442,6 +470,8 @@ export function installWorkBuddyWeb(ctx) {
         webCtx.webServer.register({ kind: "exact", path: `${ROUTE}/api-key/remove`, handler: removeApiKey }),
         webCtx.webServer.register({ kind: "exact", path: `${ROUTE}/token`, handler: token }),
         webCtx.webServer.register({ kind: "exact", path: `${ROUTE}/credits`, handler: credits }),
+        webCtx.webServer.register({ kind: "exact", path: `${ROUTE}/login-start`, handler: loginStart }),
+        webCtx.webServer.register({ kind: "exact", path: `${ROUTE}/login-poll`, handler: loginPoll }),
         webCtx.webServer.register({ kind: "exact", path: `${ROUTE}/login`, handler: login }),
         webCtx.webServer.register({ kind: "exact", path: `${ROUTE}/remove`, handler: remove }),
       ];

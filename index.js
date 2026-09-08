@@ -64,17 +64,17 @@ const workBuddyApi = {
 };
 
 const FALLBACK_MODELS = [
-  ["hy3", "Hy3", 192000, 64000, true],
-  ["glm-5.2", "GLM-5.2", 1000000, 48000, false],
-  ["glm-5.1", "GLM-5.1", 200000, 48000, false],
-  ["glm-5v-turbo", "GLM-5v-Turbo", 200000, 64000, true],
-  ["minimax-m3-pay", "MiniMax-M3", 512000, 128000, true],
-  ["minimax-m2.7", "MiniMax-M2.7", 200000, 48000, true],
-  ["kimi-k3-2", "Kimi-K3", 1000000, 32000, true],
-  ["kimi-k2.7", "Kimi-K2.7-Code", 256000, 32000, true],
-  ["kimi-k2.6", "Kimi-K2.6", 256000, 32000, true],
-  ["deepseek-v4-pro", "DeepSeek V4 Pro", 1000000, 50000, true],
-  ["deepseek-v4-flash", "DeepSeek V4 Flash", 1000000, 50000, true],
+  ["hy3", "Hy3 [1x]", 192000, 64000, true],
+  ["glm-5.2", "GLM-5.2 [1x]", 1000000, 48000, false],
+  ["glm-5.1", "GLM-5.1 [1x]", 200000, 48000, false],
+  ["glm-5v-turbo", "GLM-5v-Turbo [1x]", 200000, 64000, true],
+  ["minimax-m3-pay", "MiniMax-M3 [1x]", 512000, 128000, true],
+  ["minimax-m2.7", "MiniMax-M2.7 [1x]", 200000, 48000, true],
+  ["kimi-k3-2", "Kimi-K3 [1x]", 1000000, 32000, true],
+  ["kimi-k2.7", "Kimi-K2.7-Code [1x]", 256000, 32000, true],
+  ["kimi-k2.6", "Kimi-K2.6 [1x]", 256000, 32000, true],
+  ["deepseek-v4-pro", "DeepSeek V4 Pro [1x]", 1000000, 50000, true],
+  ["deepseek-v4-flash", "DeepSeek V4 Flash [1x]", 1000000, 50000, true],
 ].map(([id, modelName, contextWindow, maxTokens, images]) =>
   workBuddyModel({ id, name: modelName, contextWindow, maxTokens, images }),
 );
@@ -156,7 +156,7 @@ function modelsFromConfig(data) {
     if (!contextWindow || !maxTokens) return [];
     return [workBuddyModel({
       id,
-      name: text(raw.name, fallback?.name, id),
+      name: text(raw.name, fallback?.name, id) + (() => { const c = raw.credits; if (typeof c === "number" && c > 0) return ` · ${c}×`; if (typeof c === "string") { const m = c.match(/(\d+(?:\.\d+)?)/); if (m) return ` · ${m[1]}×`; } return ""; })(),
       contextWindow,
       maxTokens,
       images: raw.supportsImages === true || fallback?.input.includes("image") === true,
@@ -171,9 +171,12 @@ function authenticationHeaders(credential) {
 }
 
 async function fetchWorkBuddyModels(credential, signal) {
+  // Use the same endpoint as the WorkBuddy web app (www.workbuddy.cn/app)
+  // which returns per-model credits (积分倍率) field
+  const MODELS_URL = "https://copilot.tencent.com/console/enterprises/personal/models";
   let response;
   try {
-    response = await fetch(CONFIG_URL, {
+    response = await fetch(MODELS_URL, {
       headers: {
         accept: "application/json",
         ...authenticationHeaders(credential),
@@ -188,8 +191,10 @@ async function fetchWorkBuddyModels(credential, signal) {
   }
   if (!response.ok) throw new LlmError(`WorkBuddy 模型配置接口返回 ${response.status}`, "DISCOVERY_FAILED");
   const body = await response.json();
-  if (body?.code !== 0) throw new LlmError(`WorkBuddy 模型配置接口错误：${body?.msg ?? body?.code}`, "DISCOVERY_FAILED");
-  const models = modelsFromConfig(body.data);
+  // Response format: { code: 0, data: { models: [...], agents: [...] } }
+  const data = body?.data ?? body;
+  if (body?.code !== undefined && body?.code !== 0) throw new LlmError(`WorkBuddy 模型配置接口错误：${body?.msg ?? body?.code}`, "DISCOVERY_FAILED");
+  const models = modelsFromConfig(data);
   if (models.length === 0) throw new LlmError("WorkBuddy 没有返回 CLI 可用模型", "DISCOVERY_FAILED");
   return models;
 }

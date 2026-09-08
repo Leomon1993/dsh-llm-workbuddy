@@ -279,6 +279,38 @@ export function workBuddySessionAccounts(store) {
   }));
 }
 
+
+export async function createLoginSession(signal) {
+  const state = await request("/auth/state?platform=CLI", {
+    method: "POST",
+    headers: { ...REQUEST_HEADERS, ...NO_ACCOUNT_HEADERS },
+    body: "{}",
+    signal,
+  }, "创建 WorkBuddy 登录会话");
+  if (!state?.state || !state?.authUrl) throw new Error("WorkBuddy 登录接口没有返回登录地址");
+  return { state: state.state, authUrl: state.authUrl };
+}
+
+export async function completeLoginSession(loginState, signal) {
+  if (!loginState || !loginState.state) throw new Error("登录会话无效");
+  const auth = calculateExpiresAt(await poll(
+    `/auth/token?state=${encodeURIComponent(loginState.state)}`,
+    NO_ACCOUNT_HEADERS,
+    "等待 WorkBuddy 登录",
+    10 * 60_000,
+    signal,
+  ));
+  if (!auth.accessToken || !auth.refreshToken) throw new Error("WorkBuddy 登录接口没有返回完整令牌");
+  const account = await poll(
+    `/login/account?state=${encodeURIComponent(loginState.state)}`,
+    { ...enterpriseHeaders({ auth }), authorization: `Bearer ${auth.accessToken}`, ...NO_ID_HEADERS },
+    "获取 WorkBuddy 账号",
+    60_000,
+    signal,
+  );
+  return { auth, account: normalizeAccount(account, auth) };
+}
+
 export async function loginWorkBuddy(onAuthUrl, signal) {
   const state = await request("/auth/state?platform=CLI", {
     method: "POST",

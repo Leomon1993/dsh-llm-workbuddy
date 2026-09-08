@@ -454,13 +454,49 @@ window.__ModuleLoader__.load({
         }
       });
       tokenButton.addEventListener("click", async () => {
+        if (current.accounts?.length) {
+          setBusy(true);
+          tokenButton.textContent = "切换中…";
+          message.textContent = "正在切换令牌账号…";
+          try {
+            const next = await request("token");
+            render(next);
+            await loadCredits(next.activeAccountId);
+          } catch (error) {
+            message.textContent = error instanceof Error ? error.message : "切换失败";
+            message.style.color = "var(--dsw-text-danger, #c62828)";
+          } finally {
+            setBusy(false);
+          }
+          return;
+        }
         setBusy(true);
-        tokenButton.textContent = "切换中…";
-        message.textContent = current.accounts?.length ? "正在切换令牌账号…" : "请在浏览器中完成 WorkBuddy 中国站登录";
+        tokenButton.textContent = "等待登录…";
+        message.textContent = "正在获取登录地址…";
         try {
-          const next = await request(current.accounts?.length ? "token" : "login");
-          render(next);
-          await loadCredits(next.activeAccountId);
+          const start = await request("login-start");
+          const authWindow = window.open(start.authUrl, "_blank");
+          message.textContent = "请在新窗口中完成 WorkBuddy 登录，完成后此页面将自动检测";
+          const pollInterval = setInterval(async () => {
+            try {
+              const result = await request("login-poll", { sessionId: start.sessionId });
+              if (result.ok && !result.pending) {
+                clearInterval(pollInterval);
+                render(result);
+                await loadCredits(result.activeAccountId);
+                setBusy(false);
+                if (authWindow && !authWindow.closed) authWindow.close();
+              }
+            } catch (e) {
+              if (e.message && e.message.includes("已过期")) {
+                clearInterval(pollInterval);
+                message.textContent = "登录会话已过期，请重新登录";
+                message.style.color = "var(--dsw-text-danger, #c62828)";
+                setBusy(false);
+              }
+            }
+          }, 2000);
+          setTimeout(() => { clearInterval(pollInterval); }, 10 * 60 * 1000);
         } catch (error) {
           message.textContent = error instanceof Error ? error.message : "登录失败";
           message.style.color = "var(--dsw-text-danger, #c62828)";
@@ -470,12 +506,32 @@ window.__ModuleLoader__.load({
       });
       addButton.addEventListener("click", async () => {
         setBusy(true);
-        addButton.textContent = "等待浏览器登录…";
-        message.textContent = "请在浏览器中完成 WorkBuddy 中国站登录";
+        addButton.textContent = "等待登录…";
+        message.textContent = "正在获取登录地址…";
         try {
-          const next = await request("login");
-          render(next);
-          await loadCredits(next.activeAccountId);
+          const start = await request("login-start");
+          const authWindow = window.open(start.authUrl, "_blank");
+          message.textContent = "请在新窗口中完成 WorkBuddy 登录，完成后此页面将自动检测";
+          const pollInterval = setInterval(async () => {
+            try {
+              const result = await request("login-poll", { sessionId: start.sessionId });
+              if (result.ok && !result.pending) {
+                clearInterval(pollInterval);
+                render(result);
+                await loadCredits(result.activeAccountId);
+                setBusy(false);
+                if (authWindow && !authWindow.closed) authWindow.close();
+              }
+            } catch (e) {
+              if (e.message && e.message.includes("已过期")) {
+                clearInterval(pollInterval);
+                message.textContent = "登录会话已过期，请重新登录";
+                message.style.color = "var(--dsw-text-danger, #c62828)";
+                setBusy(false);
+              }
+            }
+          }, 2000);
+          setTimeout(() => { clearInterval(pollInterval); }, 10 * 60 * 1000);
         } catch (error) {
           message.textContent = error instanceof Error ? error.message : "登录失败";
           message.style.color = "var(--dsw-text-danger, #c62828)";
