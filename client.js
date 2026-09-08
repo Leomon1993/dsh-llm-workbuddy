@@ -1,5 +1,5 @@
 window.__ModuleLoader__.load({
-  id: "@axiaohungry/dsh-llm-workbuddy",
+  id: "@leomon1993/dsh-llm-workbuddy",
   factory: () => {
     const ROUTE = "/dsh-llm-workbuddy/auth";
     const MARKER = "data-workbuddy-auth-switch";
