@@ -1,3 +1,70 @@
+# DSH WorkBuddy Provider（Leomon1993 fork）
+
+> [!NOTE]
+> 这是 [Axiaohungry/dsh-llm-workbuddy](https://github.com/Axiaohungry/dsh-llm-workbuddy)
+> 的 fork，包名 `@leomon1993/dsh-llm-workbuddy`。
+>
+> **为什么 fork**：原版补丁直接改 `node_modules` 下的文件，而 `dsh plugin add/remove`
+> 会经 pnpm 重装该包、把补丁覆盖回原版，导致模型积分倍率显示反复消失。
+> 本 fork 把补丁**烘焙进源码**，装出来就是补丁版，不依赖任何事后守护脚本。
+>
+> 基线上游 commit：`1ca3aa2`（npm v1.3.11）。
+
+## 本 fork 相对上游的三项改动
+
+### 1. 模型积分倍率显示（`index.js`）
+- 模型端点由 `/v3/config` 改为 WorkBuddy 网页版所用的
+  `/console/enterprises/personal/models`，该端点返回每模型的 `credits` 字段；
+- 倍率追加到模型名后：`DeepSeek V4 Flash · 0.06×`；
+- 兼容数字与字符串两种形式（如 `"x0.05 credits"`）；
+- `FALLBACK_MODELS` 名称带 `[1x]`，未登录时也能看到倍率。
+
+### 2. 两阶段弹窗登录（`workbuddy-auth.js` / `workbuddy-web.js` / `client.js`）
+- 新增 `createLoginSession` / `completeLoginSession`；
+- 新增 `/login-start` + `/login-poll` 路由，浏览器弹窗登录 + 2 秒轮询，
+  替代原版服务端阻塞式登录。
+
+### 3. 隧道来源放行（`workbuddy-web.js`）
+- `localPost()` 允许非 loopback origin，使 DSH 经隧道访问时仍可用。
+
+## 安装
+
+在 DSH profile 的 `package.json` 中：
+
+```json
+{
+  "dependencies": {
+    "@leomon1993/dsh-llm-workbuddy": "github:Leomon1993/dsh-llm-workbuddy#v1.3.11-patched.1"
+  },
+  "dsh": {
+    "profile": {
+      "bundles": ["@leomon1993/dsh-llm-workbuddy"]
+    }
+  }
+}
+```
+
+改包名后必须同步三处自引用，否则加载器会去解析上游包：
+- `cordis.patch.yml` 的 `insert.name`
+- `client.js` 的 `id`
+- `cli.js` 的 `PACKAGE`
+
+## 上游更新时如何同步
+
+```sh
+git remote add upstream https://github.com/Axiaohungry/dsh-llm-workbuddy.git
+git fetch upstream
+git merge upstream/main          # 解决冲突后重打上述三项补丁
+git tag -f v1.3.11-patched.N     # 递增 N
+git push origin main --tags
+```
+
+然后更新 DSH profile 依赖里的 tag 并 `pnpm install --force`。
+
+---
+
+以下为上游原始说明。
+
 # DSH WorkBuddy Provider
 
 为 DeepSeek Harness（DSH）增加 `WorkBuddy 中国区` Provider。插件通过
