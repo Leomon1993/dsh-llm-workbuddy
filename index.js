@@ -603,6 +603,60 @@ export function apply(ctx, config) {
   // Keep WorkBuddy out of the settings base layer so it appears in WebUI's
   // "Add provider" dropdown. The runtime profile above still exists as the
   // built-in implementation; selecting it only persists the credential ref.
+
+  // ── /wb-next 命令：一键切换 WorkBuddy 账号 ──
+  ctx.inject(["commands"], (commandCtx) => {
+    commandCtx.commands.register({
+      name: "wb-next",
+      description: "切换 WorkBuddy 到下一个账号（429 限流时使用）",
+      handler: async ({ agent }) => {
+        const credentials = ctx.get("credentials");
+        if (!credentials) return { kind: "error", text: "凭据服务不可用" };
+        const sessionsRef = credentialRef(WORKBUDDY_SESSIONS_REF);
+        const stored = await credentials.resolve(sessionsRef);
+        if (!stored?.value) return { kind: "error", text: "未找到 WorkBuddy 登录凭据" };
+        let store;
+        try { store = parseWorkBuddySessions(stored.value); } catch { return { kind: "error", text: "凭据解析失败" }; }
+        const sessions = store.sessions ?? [];
+        if (sessions.length < 2) return { kind: "error", text: `只有 ${sessions.length} 个账号，无需切换` };
+        const curIdx = sessions.findIndex((s) => s.id === store.activeId);
+        const cur = sessions[curIdx >= 0 ? curIdx : 0];
+        const next = sessions[(curIdx + 1) % sessions.length];
+        store.activeId = next.id;
+        await credentials.set(sessionsRef, serializeWorkBuddySessions(store));
+
+        // 附带查询新账号的额度信息（失败不影响切换结果）
+        let usage = "";
+        try {
+          const { fetchWorkBuddyCredits } = await import("./workbuddy-credits.js");
+          const c = await fetchWorkBuddyCredits(next);
+          const parts = [];
+          if (c?.credits !== null && c?.credits !== undefined) {
+            parts.push(`剩余积分 ${c.credits}${c.totalDosage ? ` / ${c.totalDosage}` : ""}`);
+          } else if (c?.unlimited) {
+            parts.push("剩余积分 不限");
+          }
+          if (c?.todayUsage) {
+            const t = c.todayUsage;
+            const tu = [];
+            // 实测字段：{ date, used(已用积分), count(请求次数), synced }
+            // 注意：免费额度下 used 恒为 0，**count 才是真正的限流指标**
+            if (t.count !== undefined && t.count !== null) tu.push(`今日请求 ${t.count}`);
+            if (t.used !== undefined && t.used !== null && Number(t.used) > 0) tu.push(`今日用量 ${t.used}`);
+            if (tu.length) parts.push(tu.join(" · "));
+          }
+          if (c?.cycleResetTime) parts.push(`重置 ${c.cycleResetTime}`);
+          if (parts.length) usage = `\n📊 ${parts.join(" | ")}`;
+          else if (c?.creditError) usage = `\n⚠️ 额度查询失败：${c.creditError}`;
+        } catch (error) {
+          usage = `\n⚠️ 额度查询不可用：${error instanceof Error ? error.message : String(error)}`;
+        }
+
+        return { kind: "success", text: `✅ 已从 ${cur.label ?? "unknown"} 切换到 ${next.label ?? "unknown"}，请继续${usage}` };
+      },
+    });
+  });
+
   installSettingsCompat(ctx, NS, Config, config ?? { providers: {} }, {
     setSource(source) {
       current = source;

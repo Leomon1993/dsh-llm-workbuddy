@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { setTimeout as delay } from "node:timers/promises";
 
 export const WORKBUDDY_SESSION_REF = "WORKBUDDY_LOGIN_SESSION";
@@ -305,6 +305,24 @@ function readRateLimits() {
   }
 }
 
+/**
+ * 凭据文件（~/.dsh/.credentials.yaml）的修改时间。
+ *
+ * 用户在「设置 → 模型 → WorkBuddy」里手动切账号时，DSH 会重写这个文件。
+ * 若它比限流登记表新，说明**用户之后手动选过了** —— 此时必须尊重手动选择，
+ * 不能用自动轮换覆盖它。
+ *
+ * 这是修一次真实事故加的：曾误把用户刚切过去的干净账号登记成"撞墙"，
+ * 导致用户在设置里怎么切都被自动切走，等于设置界面失效。
+ */
+function credentialFileMtime() {
+  try {
+    return statSync(`${process.env.HOME}/.dsh/.credentials.yaml`).mtimeMs;
+  } catch {
+    return 0;   // 读不到 → 视为很旧，不阻止自动轮换
+  }
+}
+
 export function activeWorkBuddySession(store) {
   const sessions = store?.sessions ?? [];
   if (!sessions.length) return undefined;
@@ -315,6 +333,12 @@ export function activeWorkBuddySession(store) {
 
   // 当前账号没撞过墙 → 继续用它（尊重用户手动选择）
   if (limits[fallback.id] === undefined) return fallback;
+
+  // ⚠️ 关键：用户手动切换优先于自动轮换。
+  // 若凭据文件的修改时间晚于该账号的撞墙登记时间，说明用户是在"看到限流之后"
+  // 才手动切过来的 —— 那就听用户的，不要再自动切走。
+  const manualAt = credentialFileMtime();
+  if (manualAt > (limits[fallback.id] ?? 0)) return fallback;
 
   // 优先级排序：① 无记录（从未撞墙） ② 有记录按撞墙时刻从早到晚（越久没撞越优先）
   // 无记录用 -Infinity：升序时排最前，即"从未撞墙"最优先

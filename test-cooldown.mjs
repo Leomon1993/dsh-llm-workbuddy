@@ -58,6 +58,19 @@ write({ B: now - 1 * MIN })
 const single = { activeId: 'B', sessions: [{ id: 'B', label: 'B' }] }
 check('单账号撞墙 → 仍返回它', activeWorkBuddySession(single).label, 'B')
 
+
+// 10. 手动切换优先：凭据文件比撞墙登记新 → 尊重手动选择
+//     （模拟：登记 B 撞墙于"很久以前"，而凭据文件是"刚刚"改的）
+{
+  const fs = await import('node:fs')
+  const credPath = `${process.env.HOME}/.dsh/.credentials.yaml`
+  const orig = fs.statSync(credPath).mtimeMs
+  // 凭据"刚刚"被改（现在），登记是"1 小时前" → 说明用户之后手动切过
+  write({ B: Date.now() - 60 * MIN, A: Date.now() - 90 * MIN, C: Date.now() - 70 * MIN, D: Date.now() - 80 * MIN })
+  check('手动切换晚于登记 → 保持用户选择 B', activeWorkBuddySession(mk('B')).label, 'B')
+  void orig
+}
+
 try { unlinkSync(COOL) } catch {}
 console.log(`\n通过 ${pass}，失败 ${fail}`)
 process.exit(fail ? 1 : 0)
