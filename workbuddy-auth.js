@@ -265,8 +265,14 @@ export function upsertWorkBuddySession(store, session, now = Date.now()) {
 }
 
 /**
- * 冷却名单文件路径。外部守护脚本（.dsh/growth/wb-autorotate.mjs）检测到 429 后
- * 把被限流的账号 id 写进来，本模块在选账号时跳过它们，实现免重启自动换号。
+ * 限流登记文件路径。外部守护脚本（.dsh/growth/wb-autorotate.mjs）检测到 429 后，
+ * 把该账号的**撞墙时刻**写进来。本模块选账号时按下面优先级排队：
+ *
+ *   1. 从未撞墙的账号（无时间戳）—— 最优先
+ *   2. 撞过墙的，按撞墙时间**从远到近**排（越久没撞越优先）
+ *   3. activeId 指向的账号 —— 仅作为兜底
+ *
+ * 这是 LRU 思路：不是"罚下场固定时长"，而是"谁最久没出事谁先上"。
  *
  * 为什么用外部文件而不是插件自己抓 429：429 由 DSH 核心 dsh-llm-pi-ai 判定
  * （`/\b429\b|rate.?limit/i`），插件层看不到 HTTP 响应，硬抓就要改核心。
@@ -275,21 +281,23 @@ export function upsertWorkBuddySession(store, session, now = Date.now()) {
  * 环境变量 WORKBUDDY_COOLDOWN_FILE 可覆盖路径；文件不存在或读失败时静默忽略，
  * 行为完全退回上游逻辑。
  */
-/** 冷却名单文件路径。每次调用时求值，便于测试注入与运行时覆盖。 */
+/** 限流登记文件路径。每次调用时求值，便于测试注入与运行时覆盖。 */
 function cooldownFile() {
   return process.env.WORKBUDDY_COOLDOWN_FILE ??
     `${process.env.HOME}/.dsh/.workbuddy-cooldown.json`;
 }
 
-/** 读取冷却名单：{ "<sessionId>": <expireAt ms> }，过期的自动忽略。 */
-function readCooldowns() {
+/**
+ * 读取限流登记表：{ "<sessionId>": <撞墙时刻 ms> }。
+ * 只保留数值合法的条目，其余忽略。
+ */
+function readRateLimits() {
   try {
     const raw = JSON.parse(readFileSync(cooldownFile(), "utf8"));
     if (!raw || typeof raw !== "object") return {};
-    const now = Date.now();
     const out = {};
-    for (const [id, until] of Object.entries(raw)) {
-      if (Number.isFinite(until) && until > now) out[id] = until;
+    for (const [id, at] of Object.entries(raw)) {
+      if (Number.isFinite(at)) out[id] = at;
     }
     return out;
   } catch {
@@ -302,19 +310,26 @@ export function activeWorkBuddySession(store) {
   if (!sessions.length) return undefined;
   const fallback = sessions.find((entry) => entry.id === store.activeId) ?? sessions[0];
 
-  const cooldowns = readCooldowns();
-  if (!Object.keys(cooldowns).length) return fallback;
+  const limits = readRateLimits();
+  if (!Object.keys(limits).length) return fallback;
 
-  // 当前账号没被冷却 → 正常返回
-  if (!cooldowns[fallback.id]) return fallback;
+  // 当前账号没撞过墙 → 继续用它（尊重用户手动选择）
+  if (limits[fallback.id] === undefined) return fallback;
 
-  // 当前账号在冷却中 → 从它之后开始找第一个可用的
-  const start = sessions.findIndex((entry) => entry.id === fallback.id);
-  for (let i = 1; i <= sessions.length; i += 1) {
-    const candidate = sessions[(start + i) % sessions.length];
-    if (!cooldowns[candidate.id]) return candidate;
-  }
-  return fallback;   // 全部冷却中 → 仍用当前，交给上游报错
+  // 优先级排序：① 无记录（从未撞墙） ② 有记录按撞墙时刻从早到晚（越久没撞越优先）
+  // 无记录用 -Infinity：升序时排最前，即"从未撞墙"最优先
+  const rank = (entry) => {
+    const at = limits[entry.id];
+    return at === undefined ? Number.NEGATIVE_INFINITY : at;
+  };
+  // 升序：rank 小的优先（从未撞墙 -Infinity 最前，其次撞墙时刻最早的）
+  const byPriority = (a, b) => rank(a) - rank(b);
+  const best = sessions
+    .filter((entry) => entry.id !== fallback.id)          // 先排除当前（已撞墙）
+    .sort(byPriority)[0]
+    ?? sessions.slice().sort(byPriority)[0];             // 只剩自己时退回
+
+  return best ?? fallback;
 }
 
 export function workBuddySessionAccounts(store) {
