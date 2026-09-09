@@ -10,7 +10,7 @@
 >
 > 基线上游 commit：`1ca3aa2`（npm v1.3.11）。
 
-## 本 fork 相对上游的三项改动
+## 本 fork 相对上游的改动
 
 ### 1. 模型积分倍率显示（`index.js`）
 - 模型端点由 `/v3/config` 改为 WorkBuddy 网页版所用的
@@ -26,6 +26,39 @@
 
 ### 3. 隧道来源放行（`workbuddy-web.js`）
 - `localPost()` 允许非 loopback origin，使 DSH 经隧道访问时仍可用。
+
+### 4. 账号管理命令（`index.js`）
+WorkBuddy 免费额度会在高频使用后返回 429。为便于手动轮换多个已登录账号，
+注册了三个 slash command（切换即时生效，`activeId` 每次请求实时读取）：
+
+| 命令 | 作用 |
+| --- | --- |
+| `/wb-status` | 列出全部账号的今日请求数、积分，标注当前账号 |
+| `/wb-use <序号>` | 切换到指定序号（或 label）的账号 |
+| `/wb-next` | 切换到下一个账号 |
+
+切换后返回新账号的用量，例如：
+```
+✅ 已从 alice 切换到 bob，请继续
+📊 请求 68 | 积分 2000/2000   # 示例数据
+```
+
+> ⚠️ 判断会否限流要看**今日请求数（count）**，不要看积分：
+> 免费额度下 `credits` 恒为满值（实测 4 个账号都是 2000/2000）不反映真实用量，
+> 而 `todayUsage.count` 差异很大（68 ~ 507），撞墙的就是次数最高的那个。
+
+实现在 `index.js` 的 `ctx.inject(["commands"], ...)` 块，共用
+`loadStore` / `saveStore` / `usageOf` / `fmtUsage`。
+
+> 注意：注册命令时若传 `input.hint`，必须是**非空字符串**，
+> 空串会让 DSH 的 `normalizeDefinition()` 抛错导致注册失败
+> （`wb-next` 因不带参数，故不传 `input` 字段）。
+
+## 上游同步注意
+`test-cooldown.mjs` 是账号选择逻辑的单测（10 项，含"手动切换优先"用例）。
+早期的"撞墙自动轮换"实现（`workbuddy-auth.js` 里读冷却名单）**已移除** ——
+它无法可靠判断"哪个账号撞墙"（429 是延迟结果，与当前 activeId 未必对应），
+会误伤用户手动选中的账号。现改为手动命令切换。
 
 ## 安装
 
