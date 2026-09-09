@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { setTimeout as delay } from "node:timers/promises";
 
 export const WORKBUDDY_SESSION_REF = "WORKBUDDY_LOGIN_SESSION";
@@ -263,8 +264,57 @@ export function upsertWorkBuddySession(store, session, now = Date.now()) {
   return { version: 1, activeId: incoming.id, sessions };
 }
 
+/**
+ * 冷却名单文件路径。外部守护脚本（.dsh/growth/wb-autorotate.mjs）检测到 429 后
+ * 把被限流的账号 id 写进来，本模块在选账号时跳过它们，实现免重启自动换号。
+ *
+ * 为什么用外部文件而不是插件自己抓 429：429 由 DSH 核心 dsh-llm-pi-ai 判定
+ * （`/\b429\b|rate.?limit/i`），插件层看不到 HTTP 响应，硬抓就要改核心。
+ * 用文件传递信号，插件侧改动最小、风险最低。
+ *
+ * 环境变量 WORKBUDDY_COOLDOWN_FILE 可覆盖路径；文件不存在或读失败时静默忽略，
+ * 行为完全退回上游逻辑。
+ */
+/** 冷却名单文件路径。每次调用时求值，便于测试注入与运行时覆盖。 */
+function cooldownFile() {
+  return process.env.WORKBUDDY_COOLDOWN_FILE ??
+    `${process.env.HOME}/.dsh/.workbuddy-cooldown.json`;
+}
+
+/** 读取冷却名单：{ "<sessionId>": <expireAt ms> }，过期的自动忽略。 */
+function readCooldowns() {
+  try {
+    const raw = JSON.parse(readFileSync(cooldownFile(), "utf8"));
+    if (!raw || typeof raw !== "object") return {};
+    const now = Date.now();
+    const out = {};
+    for (const [id, until] of Object.entries(raw)) {
+      if (Number.isFinite(until) && until > now) out[id] = until;
+    }
+    return out;
+  } catch {
+    return {};   // 文件不存在/损坏 → 不影响正常使用
+  }
+}
+
 export function activeWorkBuddySession(store) {
-  return store?.sessions?.find((entry) => entry.id === store.activeId) ?? store?.sessions?.[0];
+  const sessions = store?.sessions ?? [];
+  if (!sessions.length) return undefined;
+  const fallback = sessions.find((entry) => entry.id === store.activeId) ?? sessions[0];
+
+  const cooldowns = readCooldowns();
+  if (!Object.keys(cooldowns).length) return fallback;
+
+  // 当前账号没被冷却 → 正常返回
+  if (!cooldowns[fallback.id]) return fallback;
+
+  // 当前账号在冷却中 → 从它之后开始找第一个可用的
+  const start = sessions.findIndex((entry) => entry.id === fallback.id);
+  for (let i = 1; i <= sessions.length; i += 1) {
+    const candidate = sessions[(start + i) % sessions.length];
+    if (!cooldowns[candidate.id]) return candidate;
+  }
+  return fallback;   // 全部冷却中 → 仍用当前，交给上游报错
 }
 
 export function workBuddySessionAccounts(store) {
