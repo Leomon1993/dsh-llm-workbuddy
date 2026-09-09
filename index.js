@@ -604,55 +604,123 @@ export function apply(ctx, config) {
   // "Add provider" dropdown. The runtime profile above still exists as the
   // built-in implementation; selecting it only persists the credential ref.
 
-  // ── /wb-next 命令：一键切换 WorkBuddy 账号 ──
+  // ── WorkBuddy 账号管理命令：/wb-status /wb-next /wb-use ──
   ctx.inject(["commands"], (commandCtx) => {
+    /** 读取账号列表 */
+    const loadStore = async () => {
+      const credentials = ctx.get("credentials");
+      if (!credentials) throw new Error("凭据服务不可用");
+      const stored = await credentials.resolve(credentialRef(WORKBUDDY_SESSIONS_REF));
+      if (!stored?.value) throw new Error("未找到 WorkBuddy 登录凭据");
+      const store = parseWorkBuddySessions(stored.value);
+      return { credentials, store, sessions: store.sessions ?? [] };
+    };
+    /** 保存 activeId */
+    const saveStore = async (credentials, store) => {
+      await credentials.set(credentialRef(WORKBUDDY_SESSIONS_REF), serializeWorkBuddySessions(store));
+    };
+    /** 查额度（失败返回 null，不抛） */
+    const usageOf = async (session) => {
+      try {
+        const { fetchWorkBuddyCredits } = await import("./workbuddy-credits.js");
+        return await fetchWorkBuddyCredits(session);
+      } catch {
+        return null;
+      }
+    };
+    /**
+     * 格式化额度为一行。
+     * 注意：credits 在免费额度下恒满（2000/2000）不反映限流，
+     * todayUsage.count（今日请求次数）才是真实指标。
+     */
+    const fmtUsage = (c) => {
+      if (!c) return "额度未知";
+      const parts = [];
+      if (c.todayUsage) {
+        const t = c.todayUsage;
+        const tu = [];
+        if (t.count !== undefined && t.count !== null) tu.push(`请求 ${t.count}`);
+        if (Number(t.used) > 0) tu.push(`用量 ${t.used}`);
+        if (tu.length) parts.push(tu.join(" · "));
+      }
+      if (c.unlimited) parts.push("积分不限");
+      else if (c.credits !== null && c.credits !== undefined) {
+        parts.push(`积分 ${c.credits}${c.totalDosage ? `/${c.totalDosage}` : ""}`);
+      }
+      if (c.cycleResetTime) parts.push(`重置 ${c.cycleResetTime}`);
+      return parts.length ? parts.join(" | ") : (c.creditError ?? "无数据");
+    };
+
+    // /wb-status：列出全部账号与用量，方便挑最闲的
+    commandCtx.commands.register({
+      name: "wb-status",
+      description: "列出全部 WorkBuddy 账号及今日用量（挑最闲的切换）",
+      handler: async () => {
+        try {
+          const { sessions, store } = await loadStore();
+          const lines = [];
+          for (let i = 0; i < sessions.length; i += 1) {
+            const s = sessions[i];
+            const mark = s.id === store.activeId ? " ← 当前" : "";
+            const c = await usageOf(s);
+            lines.push(`[${i}] ${String(s.label ?? s.id.slice(0, 12)).padEnd(16)} ${fmtUsage(c)}${mark}`);
+          }
+          return { kind: "success", text: `📊 WorkBuddy 账号用量\n${lines.join("\n")}\n\n切换：/wb-use <序号>` };
+        } catch (error) {
+          return { kind: "error", text: error instanceof Error ? error.message : String(error) };
+        }
+      },
+    });
+
+    // /wb-next：切到下一个
     commandCtx.commands.register({
       name: "wb-next",
       description: "切换 WorkBuddy 到下一个账号（429 限流时使用）",
-      handler: async ({ agent }) => {
-        const credentials = ctx.get("credentials");
-        if (!credentials) return { kind: "error", text: "凭据服务不可用" };
-        const sessionsRef = credentialRef(WORKBUDDY_SESSIONS_REF);
-        const stored = await credentials.resolve(sessionsRef);
-        if (!stored?.value) return { kind: "error", text: "未找到 WorkBuddy 登录凭据" };
-        let store;
-        try { store = parseWorkBuddySessions(stored.value); } catch { return { kind: "error", text: "凭据解析失败" }; }
-        const sessions = store.sessions ?? [];
-        if (sessions.length < 2) return { kind: "error", text: `只有 ${sessions.length} 个账号，无需切换` };
-        const curIdx = sessions.findIndex((s) => s.id === store.activeId);
-        const cur = sessions[curIdx >= 0 ? curIdx : 0];
-        const next = sessions[(curIdx + 1) % sessions.length];
-        store.activeId = next.id;
-        await credentials.set(sessionsRef, serializeWorkBuddySessions(store));
-
-        // 附带查询新账号的额度信息（失败不影响切换结果）
-        let usage = "";
+      handler: async () => {
         try {
-          const { fetchWorkBuddyCredits } = await import("./workbuddy-credits.js");
-          const c = await fetchWorkBuddyCredits(next);
-          const parts = [];
-          if (c?.credits !== null && c?.credits !== undefined) {
-            parts.push(`剩余积分 ${c.credits}${c.totalDosage ? ` / ${c.totalDosage}` : ""}`);
-          } else if (c?.unlimited) {
-            parts.push("剩余积分 不限");
-          }
-          if (c?.todayUsage) {
-            const t = c.todayUsage;
-            const tu = [];
-            // 实测字段：{ date, used(已用积分), count(请求次数), synced }
-            // 注意：免费额度下 used 恒为 0，**count 才是真正的限流指标**
-            if (t.count !== undefined && t.count !== null) tu.push(`今日请求 ${t.count}`);
-            if (t.used !== undefined && t.used !== null && Number(t.used) > 0) tu.push(`今日用量 ${t.used}`);
-            if (tu.length) parts.push(tu.join(" · "));
-          }
-          if (c?.cycleResetTime) parts.push(`重置 ${c.cycleResetTime}`);
-          if (parts.length) usage = `\n📊 ${parts.join(" | ")}`;
-          else if (c?.creditError) usage = `\n⚠️ 额度查询失败：${c.creditError}`;
+          const { credentials, store, sessions } = await loadStore();
+          if (sessions.length < 2) return { kind: "error", text: `只有 ${sessions.length} 个账号，无需切换` };
+          const curIdx = sessions.findIndex((s) => s.id === store.activeId);
+          const cur = sessions[curIdx >= 0 ? curIdx : 0];
+          const next = sessions[(curIdx + 1) % sessions.length];
+          store.activeId = next.id;
+          await saveStore(credentials, store);
+          const c = await usageOf(next);
+          return { kind: "success", text: `✅ 已从 ${cur.label ?? "?"} 切换到 ${next.label ?? "?"}，请继续\n📊 ${fmtUsage(c)}` };
         } catch (error) {
-          usage = `\n⚠️ 额度查询不可用：${error instanceof Error ? error.message : String(error)}`;
+          return { kind: "error", text: error instanceof Error ? error.message : String(error) };
         }
+      },
+    });
 
-        return { kind: "success", text: `✅ 已从 ${cur.label ?? "unknown"} 切换到 ${next.label ?? "unknown"}，请继续${usage}` };
+    // /wb-use：按序号点选切换（hint 必须非空，否则注册会抛错）
+    commandCtx.commands.register({
+      name: "wb-use",
+      description: "切换到指定序号的 WorkBuddy 账号（先 /wb-status 查看）",
+      input: { hint: "<序号>" },
+      handler: async ({ rawInput }) => {
+        try {
+          const { credentials, store, sessions } = await loadStore();
+          const arg = (rawInput ?? "").trim();
+          const idx = /^\d+$/.test(arg)
+            ? Number(arg)
+            : sessions.findIndex((s) => s.label === arg || s.id === arg);
+          if (idx < 0 || idx >= sessions.length) {
+            return { kind: "error", text: `无效序号 "${arg}"，可用 0-${sessions.length - 1}（/wb-status 查看）` };
+          }
+          const cur = sessions.find((s) => s.id === store.activeId) ?? sessions[0];
+          const target = sessions[idx];
+          if (target.id === store.activeId) {
+            const c = await usageOf(target);
+            return { kind: "success", text: `已在 [${idx}] ${target.label ?? "?"}\n📊 ${fmtUsage(c)}` };
+          }
+          store.activeId = target.id;
+          await saveStore(credentials, store);
+          const c = await usageOf(target);
+          return { kind: "success", text: `✅ 已从 ${cur.label ?? "?"} 切换到 [${idx}] ${target.label ?? "?"}，请继续\n📊 ${fmtUsage(c)}` };
+        } catch (error) {
+          return { kind: "error", text: error instanceof Error ? error.message : String(error) };
+        }
       },
     });
   });
