@@ -36,7 +36,7 @@ check "隧道来源放行"               "$(grep -c 'allow all origins' "$D/work
 
 echo
 echo "=== 3. 语法 ==="
-for f in index.js client.js workbuddy-auth.js workbuddy-web.js workbuddy-credits.js cli.js; do
+for f in index.js client.js workbuddy-auth.js workbuddy-web.js workbuddy-credits.js workbuddy-dns.js cli.js; do
   if node --check "$D/$f" 2>/dev/null; then
     printf "  ✅ %s\n" "$f"
     ok=$((ok + 1))
@@ -80,6 +80,27 @@ const fn = new Function("raw","fallback","id","text","return " + m[0].replace(/n
 for (const c of [{name:"DeepSeek V4 Flash",credits:0.06},{name:"GLM-5.2",credits:"x0.05 credits"},{name:"Hy3"}])
   console.log("  " + String(c.name).padEnd(20) + "=> " + fn(c, c, "id", text));
 ' "$D/index.js" 2>&1
+
+echo
+echo "=== 7. DNS 劫持防护 ==="
+check "workbuddy-dns.js 存在"        "$(test -f "$D/workbuddy-dns.js" && echo 1 || echo 0)"
+check "index.js 导入模块"            "$(grep -c 'workbuddy-dns.js' "$D/index.js" 2>/dev/null)"
+check "apply() 安装防护"             "$(grep -c 'installDnsGuard()' "$D/index.js" 2>/dev/null)"
+check "DoH 端点已配置"               "$(grep -c '223.5.5.5/resolve' "$D/workbuddy-dns.js" 2>/dev/null)"
+check "系统解析器回退"               "$(grep -c 'systemLookup' "$D/workbuddy-dns.js" 2>/dev/null)"
+check "引用计数（兼容热重载）"        "$(grep -c 'activeGuard.refs' "$D/workbuddy-dns.js" 2>/dev/null)"
+# 发布清单必须包含新模块，否则 pnpm install 会把它漏掉
+# The published package comes from THIS repo, so the fork's own manifest is the
+# one that must list the module — checking the installed copy would prove nothing.
+check "fork files 含新模块"           "$(node -e 'const f=require(process.argv[1]).files||[];console.log(f.includes("workbuddy-dns.js")?1:0)' "$(dirname "$0")/package.json" 2>/dev/null)"
+# 插件目录的模块必须与 fork 源码一致
+if [ -f "$D/workbuddy-dns.js" ] && [ -f "$(dirname "$0")/workbuddy-dns.js" ]; then
+  if diff -q "$(dirname "$0")/workbuddy-dns.js" "$D/workbuddy-dns.js" >/dev/null 2>&1; then
+    printf "  ✅ %-28s\n" "模块与 fork 一致"; ok=$((ok + 1))
+  else
+    printf "  ❌ %-28s\n" "模块与 fork 不一致"; fail=$((fail + 1))
+  fi
+fi
 
 echo
 echo "通过 $ok 项，失败 $fail 项"
