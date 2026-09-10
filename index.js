@@ -25,6 +25,7 @@ import {
   upsertWorkBuddySession,
 } from "./workbuddy-auth.js";
 import { installWorkBuddyWeb } from "./workbuddy-web.js";
+import { installDnsGuard } from "./workbuddy-dns.js";
 
 export { Config };
 
@@ -375,6 +376,10 @@ function installSettingsCompat(ctx, ns, schema, entry, hooks) {
 export const __testing = Object.freeze({ authenticationHeaders, workBuddyApiKeyAuth, workBuddyRequestOptions, workBuddySource, genericProvider, modelsFromConfig, ownsProvider, runtimeHeaders, selectWorkBuddyModels });
 
 export function apply(ctx, config) {
+  // Resolve the provider's own hosts over DoH before any request goes out.
+  // See workbuddy-dns.js: the LAN resolver intermittently returned a
+  // hijacked IP whose expired certificate surfaced as TRANSPORT failures.
+  ctx.effect(() => installDnsGuard(), "llm-workbuddy: DNS hijack guard");
   installWorkBuddyWeb(ctx);
   let current = () => config;
   let remoteModels;
