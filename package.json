@@ -1,7 +1,7 @@
 {
   "name": "@leomon1993/dsh-llm-workbuddy",
-  "version": "1.3.11-patched.2",
-  "description": "WorkBuddy LLM provider for DeepSeek Harness — fork with per-model credit multiplier display, two-step popup login, and tunnel-origin allowance",
+  "version": "1.3.12-patched.1",
+  "description": "WorkBuddy LLM provider for DeepSeek Harness — fork with per-model credit multiplier display, two-step popup login, tunnel-origin allowance, and upstream v1.3.12 fixes",
   "author": "Axiaohungry (upstream) — Leomon1993 (fork patches)",
   "keywords": [
     "deepseek-harness",
